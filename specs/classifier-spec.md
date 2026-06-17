@@ -281,7 +281,7 @@ Raw response text: [paste it here]
 **Did any episodes return `"unknown"`? If so, why?**
 
 ```
-[yes / no — if yes, what did the raw response look like?]
+no
 ```
 
 **One thing about the output format that surprised you:**
