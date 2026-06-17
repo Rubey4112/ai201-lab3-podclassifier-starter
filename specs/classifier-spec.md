@@ -91,10 +91,24 @@ the format below:" followed by the output format you chose.
 **What output format should you request from the LLM?**
 
 ```
-[blank — you need to parse the response in classify_episode(). What format
-makes parsing reliable? Think about: a single label on its own line?
-A structured format like "Label: X / Reasoning: Y"? JSON?
-What are the tradeoffs?]
+Request this exact two-line format:
+
+  Label: <label>
+  Reasoning: <one sentence explanation>
+
+Tradeoffs:
+- A bare label on one line is the simplest to parse, but you lose reasoning
+  and can't tell whether the model was confident or guessing.
+- JSON is the most machine-readable, but LLMs sometimes emit prose before or
+  after the JSON block, requiring more defensive parsing.
+- The "Label: X / Reasoning: Y" two-line format is the best balance: easy to
+  parse with a single startswith("Label:") check, and the reasoning line is
+  always present for debugging and the Implementation Notes section.
+
+Include this instruction verbatim at the end of the prompt:
+  "Respond in exactly this format:
+  Label: <one of: interview, solo, panel, narrative>
+  Reasoning: <one sentence>"
 ```
 
 ---
@@ -102,8 +116,18 @@ What are the tradeoffs?]
 **Edge cases to handle in the prompt:**
 
 ```
-[blank — what if labeled_examples is empty? What if the description is very
-short? How does your prompt handle these?]
+1. labeled_examples is empty: the prompt becomes zero-shot — still valid, just
+   omit the "Examples:" block entirely. The LLM can still classify from the
+   task instruction and label definitions alone.
+
+2. Description is very short (e.g., one sentence or a title only): include it
+   as-is. Don't pad or skip it; a short description is still a real signal.
+   The LLM may return "unknown" or a low-confidence label — that's fine and
+   will show up in evaluate.py results.
+
+3. Description contains special characters or newlines: no escaping needed
+   since the prompt is plain text, but strip leading/trailing whitespace before
+   inserting so the format stays consistent.
 ```
 
 ---
@@ -159,9 +183,18 @@ Extract the response text from:
 **Step 3 — Parse the response:**
 
 ```
-[blank — how do you extract the label and reasoning from the LLM's text output?
-What string operations or parsing logic do you need?
-This depends on the output format you chose in build_few_shot_prompt.]
+Given the "Label: X\nReasoning: Y" format, iterate over the response lines:
+
+  label = "unknown"
+  reasoning = ""
+  for line in raw_text.strip().splitlines():
+      if line.lower().startswith("label:"):
+          label = line.split(":", 1)[1].strip().lower()
+      elif line.lower().startswith("reasoning:"):
+          reasoning = line.split(":", 1)[1].strip()
+
+Use split(":", 1) (not split(":")) so a colon inside the reasoning text doesn't
+get cut off. Call .strip().lower() on the label so "  Interview\n" → "interview".
 ```
 
 ---
@@ -169,8 +202,15 @@ This depends on the output format you chose in build_few_shot_prompt.]
 **Step 4 — Validate the label:**
 
 ```
-[blank — what do you do if the LLM returns a label that isn't in VALID_LABELS?
-What should label be set to?]
+After parsing, check:
+
+  if label not in VALID_LABELS:
+      label = "unknown"
+
+Do NOT try to fuzzy-match (e.g., mapping "interviews" → "interview"). A
+non-exact label means the model ignored the format instruction; "unknown" is
+the correct signal so evaluate.py can count format failures separately.
+Keep reasoning unchanged — it still contains useful debugging information.
 ```
 
 ---
@@ -178,9 +218,24 @@ What should label be set to?]
 **Step 5 — Handle errors gracefully:**
 
 ```
-[blank — what could go wrong? (Network error? Unparseable response?)
-What should the function return if something fails?
-Hint: the evaluation loop runs 20 calls — one bad response shouldn't crash everything.]
+Wrap the entire function body in a try/except:
+
+  try:
+      # Steps 1–4 here
+      return {"label": label, "reasoning": reasoning}
+  except Exception as e:
+      return {"label": "unknown", "reasoning": f"Error: {e}"}
+
+What can go wrong:
+- Network / timeout error from the API call → caught by Exception
+- API key missing or rate-limit hit → same
+- Response is empty or the "Label:" line is missing → parsing produces
+  label = "unknown" naturally (Step 3 initializes it that way)
+- Response is valid but label is not in VALID_LABELS → Step 4 handles it
+
+Returning {"label": "unknown", ...} on every failure lets evaluate.py's
+loop complete all 20 calls and count errors as a distinct outcome rather
+than crashing mid-run.
 ```
 
 ---
